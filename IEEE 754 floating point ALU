@@ -1,0 +1,259 @@
+module ieee_mult(
+
+    input clk,rst,
+	input [31:0] A,B,
+	output reg [31:0] mult_out,
+	output reg done
+);
+	wire [7:0] bias_bin;
+	reg [47:0] mult_output;
+	reg [7:0]  E_new ;
+	reg  [1:0] state,next_state;
+	assign bias_bin = 8'd127; //bit = 5 bias = (2^(5-1)-1))
+	
+		always @ (posedge clk) begin
+		  if (rst) begin  
+		      mult_out<=32'd0;
+		      done<=1'b0;
+		      state<=2'd0;
+		      mult_output<=48'd0;
+		      E_new<=8'd0;
+		  end else begin
+		     state<=next_state; 
+             case(state)
+                2'd0:   begin
+                            if ((A != 32'd0) && (B != 32'd0)) begin
+                                mult_output<=({1'b1,A[22:0]}) * ({1'b1,B[22:0]});
+                            end
+                        end
+                2'd1:   begin
+                            if (mult_output[47]==1) begin
+                                mult_output <= mult_output >> 1;
+                                E_new<=A[30:23]+B[30:23] - bias_bin+1;
+                            end else begin
+                                E_new<=A[30:23]+B[30:23] - bias_bin;
+                            end
+                        end
+                2'd2:   begin
+                             mult_out[31]<=A[31] ^ B[31];
+	                         mult_out[30:23]<=E_new;
+	                         mult_out[22:0]<=mult_output[45:23];
+                       end     
+                2'd3:  begin 
+                            done<=1'b1;
+                       end
+            endcase
+		end
+	end
+    always @(*) begin
+            case (state)
+                2'd0:   begin   
+                            if ((A == 32'd0) || (B== 32'd0)) begin
+                                next_state<=2'd3;
+                            end else begin
+                                next_state<=2'd1;
+                            end
+                        end
+                2'd1:   begin
+                            next_state<=2'd2;
+                        end
+                2'd2:   begin
+                            next_state<=2'd3;
+                        end
+                2'd3:   begin
+                            next_state<=2'd3;
+                        end
+            endcase
+     end
+
+
+
+endmodule
+
+module ieee_add(
+    input clk,rst,
+	input [31:0] A,B,
+	output reg [31:0] sum_out,
+	output reg done
+    );
+	reg  [2:0] state,next_state;
+	reg AS_eq_BS;
+    reg AE_grt_BE,AE_less_BE,AE_eq_BE;
+    reg AM_grt_BM,AM_less_BM,AM_eq_BM;
+    reg aeqb,agtb,altb,S_res;
+    reg [4:0] count,index;
+    reg [24:0] sum_M;
+
+    reg [7:0] E_res;
+    reg [23:0] AM,BM;
+    
+    parameter COMPARATOR_E          = 3'd0;
+    parameter COMPARATOR_M          = 3'd6;
+    parameter COMPARATOR_RES        = 3'd7;
+    parameter MANTISSA_NORM         = 3'd1;
+    parameter MANTISSA_SUM          = 3'd2;
+    parameter MANTISSA_SUM_NORM     = 3'd3;
+    parameter ADD_SUB_RES           = 3'd4;
+    parameter RESULT                = 3'd5;
+		always @ (posedge clk) begin
+		  if (rst) begin  
+		      sum_out<=32'd0;
+		      done<=1'b0;
+		      state<=COMPARATOR_E;
+		      AS_eq_BS<=1; 
+              AE_grt_BE<=0;AE_less_BE<=0;AE_eq_BE<=0;
+              AM_grt_BM<=0;AM_less_BM<=0;AM_eq_BM<=0;
+              aeqb<=0;
+              agtb<=0;
+              altb<=0;
+              sum_M<=25'd0;
+              count<=5'd22;
+              index<=5'd1;
+              E_res<=8'd0;
+              S_res<=1'b0;
+              AM<={1'b1,A[22:0]};
+              BM<={1'b1,B[22:0]};
+		  end else begin
+		     state<=next_state; 
+             case(state)
+               COMPARATOR_E:   begin
+                                if((AS_eq_BS)== 1) begin
+                                    if(A[30:23]>B[30:23]) begin //override
+                                        AE_grt_BE<=1'b1;
+                                    end else if(A[30:23]<B[30:23]) begin
+                                         AE_less_BE<=1'b1;
+                                    end else begin
+                                        AE_eq_BE<=1'b1;
+                                    end
+                                 end
+                                end
+                COMPARATOR_M:   begin
+                                if((AE_eq_BE )== 1) begin
+                                    if(A[22:0]>B[22:0]) begin
+                                        AM_grt_BM<=1'b1;
+                                    end else if(A[22:0]<B[22:0]) begin
+                                        AM_less_BM<=1'b1;
+                                    end else begin
+                                        AM_eq_BM<=1'b1;
+                                    end
+                                end
+                                end
+                COMPARATOR_RES: begin
+                                    aeqb<=(AE_eq_BE & AM_eq_BM);
+                                    agtb<=|(AE_grt_BE & AS_eq_BS) |(AE_eq_BE & AS_eq_BS  & AM_grt_BM);
+                                    altb<=(AE_less_BE & AS_eq_BS) |(AE_eq_BE & AS_eq_BS  & AM_less_BM);
+                                 end
+                MANTISSA_NORM:   begin
+                                    if (agtb == 1) begin 
+                                        BM<=BM >> (A[30:23] - B[30:23] );
+                                        E_res<=A[30:23];
+                                    end else if (altb == 1) begin
+                                        AM <= AM >> (B[30:23] - A[30:23] );
+                                        E_res<=B[30:23];
+                                    end else begin
+                                        if (A[31] !=  B[31]) begin
+                                            sum_M<=25'd0 ;
+                                            E_res<=8'd0;
+                                        end else  begin
+                                            sum_M<=AM+BM;
+                                            E_res<=A[30:23];
+                                            S_res<=A[31];
+                                        end
+                                     end
+                                   end
+                MANTISSA_SUM:   begin
+                                    if (A[31] != B[31]) begin
+                                         if (agtb == 1) begin
+                                              sum_M<=AM - BM ;
+                                              S_res<=A[31];
+                                        end else if (altb == 1) begin
+                                              sum_M<=BM - AM ;
+                                              S_res<=B[31];
+                                        end else begin
+                                              sum_M<=AM + BM ;
+                                              S_res<=1'b0;
+                                        end
+                                    end else begin
+                                         sum_M<=AM + BM ;
+                                         S_res<=A[31];
+                                    end
+                                 end
+               MANTISSA_SUM_NORM:   begin
+                                     if (sum_M != 25'd0) begin
+                                        if (sum_M[24] == 1)  begin
+                                            sum_M<=sum_M >> 1;
+                                            E_res<=E_res + 1 ;
+                                        end
+                                        if((sum_M[24]==0)&&(sum_M[23]==0)) begin
+                                            if(sum_M[count]==1) begin
+                                                count<=5'd23;
+                                                E_res<=E_res - index;
+                                                sum_M <=sum_M << index;
+                                            end else begin
+                                                if (count!=5'd0) begin
+                                                    count<=count-1;
+                                                    index<=index+1;
+                                                end 
+                                            end
+                                        end else begin
+                                            count<=5'd23;
+                                        end    
+                                    end else begin
+                                        count<=5'd23;
+                                        E_res<=1'b0;
+                                    end
+                                 end
+              ADD_SUB_RES:      begin
+                                    sum_out[31]<=S_res;
+                                    sum_out[30:23] <= E_res;
+                                    sum_out[22:0]<=sum_M[22:0];
+                                end         
+                RESULT:         begin
+                                    done <=1'b1;
+                                end
+                        endcase
+                    end
+                end
+        always @(*) begin
+                case (state)
+                   COMPARATOR_E:        begin
+                                            if ((A == 32'd0) && (B == 32'd0)) begin   
+                                                next_state<=ADD_SUB_RES;
+                                            end else begin
+                                                next_state<=COMPARATOR_M;
+                                            end
+                                        end
+                    MANTISSA_NORM:      begin
+                                            if (aeqb == 1) begin
+                                                next_state<=MANTISSA_SUM_NORM;
+                                            end else begin
+                                                next_state<=MANTISSA_SUM;
+                                            end
+                                        end
+                    MANTISSA_SUM:       begin
+                                            next_state<=MANTISSA_SUM_NORM;
+                                        end
+                    MANTISSA_SUM_NORM:  begin
+                                            if (count!=5'd23) begin
+                                                next_state<=MANTISSA_SUM_NORM;
+                                            end else begin
+                                                next_state<=ADD_SUB_RES;
+                                            end
+                                        end
+                    ADD_SUB_RES:        begin
+                                            next_state<=RESULT;
+                                        end
+                    RESULT:             begin
+                                            next_state<=RESULT;
+                                        end
+                    COMPARATOR_M:       begin
+                                            next_state<=COMPARATOR_RES;
+                                        end
+                    COMPARATOR_RES:    begin
+                                            next_state<=MANTISSA_NORM;
+                                       end
+                endcase
+         end
+    
+
+endmodule
